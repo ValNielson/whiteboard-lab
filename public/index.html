@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Whiteboard lab</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✏️</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="bar">
+    <form class="board-switch" id="boardForm">
+      <label for="boardInput">Board</label>
+      <input id="boardInput" name="b" autocomplete="off" spellcheck="false" pattern="[a-zA-Z0-9_\-]{1,64}" title="Letters, numbers, dashes and underscores">
+      <button type="submit">Open</button>
+    </form>
+    <ul class="peers" id="peers" aria-label="People on this board"></ul>
+    <div class="status" id="status" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="statusText">Connecting</span>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="board" aria-label="Shared drawing surface"></canvas>
+    <div class="cursors" id="cursors" aria-hidden="true"></div>
+
+    <nav class="tools" aria-label="Drawing tools">
+      <fieldset>
+        <legend>Ink</legend>
+        <div class="swatches" id="swatches"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Nib</legend>
+        <div class="nibs" id="nibs"></div>
+      </fieldset>
+      <button type="button" class="clear" id="clearBtn">Clear board</button>
+    </nav>
+
+    <section class="readout" id="readout" aria-label="Connection measurements">
+      <dl>
+        <div><dt>Round trip</dt><dd><span id="rttP50">–</span> <small>p50</small> <span id="rttP99">–</span> <small>p99</small></dd></div>
+        <div><dt>Save time</dt><dd><span id="ackP50">–</span> <small>p50</small></dd></div>
+        <div><dt>Saved strokes</dt><dd id="savedCount">0</dd></div>
+        <div><dt>Waiting to save</dt><dd id="pendingCount">0</dd></div>
+        <div><dt>Board instance</dt><dd id="activation">–</dd></div>
+        <div><dt>Reconnects</dt><dd id="reconnects">0</dd></div>
+      </dl>
+      <ol class="log" id="log"></ol>
+    </section>
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

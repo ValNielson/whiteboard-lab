@@ -1,0 +1,18 @@
+{
+  "name": "whiteboard-lab",
+  "private": true,
+  "type": "module",
+  "description": "A collaborative whiteboard used to test the Workers + Durable Objects model on Cloudflare, celld, and workerd.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:lan": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "deploy:cf": "wrangler deploy",
+    "bots": "node scripts/bots.mjs",
+    "verify": "node scripts/verify.mjs",
+    "stats": "node scripts/stats.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
