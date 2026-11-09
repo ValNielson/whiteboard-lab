@@ -75,7 +75,9 @@ class Bot {
     this.timers.push(setInterval(() => this.cursor(), 1000 / CURSOR_HZ));
     this.timers.push(setInterval(() => this.ping(), 1000));
     // Stagger strokes so bots don't all fire on the same tick.
-    setTimeout(() => this.timers.push(setInterval(() => this.stroke(), STROKE_EVERY)), Math.random() * STROKE_EVERY);
+    // Track the stagger timeout too, so a disconnect before it fires doesn't
+    // leave an orphan stroke interval running (which would double the rate).
+    this.stagger = setTimeout(() => this.timers.push(setInterval(() => this.stroke(), STROKE_EVERY)), Math.random() * STROKE_EVERY);
   }
   onMessage(msg) {
     if (msg.t === "init") {
@@ -116,7 +118,7 @@ class Bot {
     if (isResend) this.pending.set(id, performance.now());
     this.send({ t: "stroke", ...s });
   }
-  clearTimers() { for (const t of this.timers) clearInterval(t); this.timers = []; }
+  clearTimers() { clearTimeout(this.stagger); for (const t of this.timers) clearInterval(t); this.timers = []; }
   close() { this.clearTimers(); try { this.ws.close(); } catch {} }
   unacked() { return this.pending.size; }
 }

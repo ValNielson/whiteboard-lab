@@ -18,7 +18,12 @@ if (!dir) { console.error("Pass --dir results/<run>"); process.exit(2); }
 let totalAcked = 0, totalMissing = 0;
 for (const file of readdirSync(dir).filter((f) => f.startsWith("acked-"))) {
   const { board, ids } = JSON.parse(readFileSync(join(dir, file), "utf8"));
-  const res = await fetch(`${base}/api/boards/${board}/strokes`);
+  let res;
+  try {
+    res = await fetch(`${base}/api/boards/${board}/strokes`, { signal: AbortSignal.timeout(15000) });
+  } catch (e) {
+    console.error(`${board}: unreachable (${e.name}). Is the server up?`); process.exitCode = 1; continue;
+  }
   if (!res.ok) { console.error(`${board}: HTTP ${res.status}`); process.exitCode = 1; continue; }
   const stored = new Set((await res.json()).ids);
   const missing = ids.filter((id) => !stored.has(id));

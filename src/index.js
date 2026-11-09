@@ -194,11 +194,17 @@ export class Board extends DurableObject {
       connections: sockets.length,
       humans: this.peers().length,
       activations,
-      databaseBytes: this.ctx.storage.sql.databaseSize,
+      // databaseSize isn't documented on celld; report null rather than failing
+      // the whole stats endpoint (which the failover experiment depends on).
+      databaseBytes: safe(() => this.ctx.storage.sql.databaseSize),
       node: this.nodeInfo(),
       uptimeMs: Date.now() - this.activatedAt,
     };
   }
+}
+
+function safe(fn) {
+  try { const v = fn(); return Number.isFinite(v) ? v : null; } catch { return null; }
 }
 
 function validStroke(m) {

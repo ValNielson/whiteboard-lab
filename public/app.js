@@ -208,6 +208,9 @@ function drawStroke(s, opts = {}) {
   ctx.stroke(); ctx.restore();
 }
 function frame() {
+  // Schedule the next frame first so one bad frame can never stop rendering.
+  requestAnimationFrame(frame);
+  if (!canvas.width || !canvas.height) return; // not laid out yet (hidden tab, etc.)
   // Drop drafts whose author vanished mid-stroke.
   const now = Date.now();
   for (const [id, d] of drafts) if (now - d.at > 4000) { drafts.delete(id); dirty = true; }
@@ -215,7 +218,7 @@ function frame() {
     dirty = false;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(grid, 0, 0);
+    if (grid.width && grid.height) ctx.drawImage(grid, 0, 0);
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
     const ordered = [...saved.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
     for (const s of ordered) drawStroke(s);
@@ -223,7 +226,6 @@ function frame() {
     for (const p of pending.values()) drawStroke(p.stroke, { alpha: 0.45, dash: true });
     if (current) drawStroke(current, { alpha: 0.45, dash: true });
   }
-  requestAnimationFrame(frame);
 }
 
 function moveCursor(id, p) {
@@ -280,6 +282,8 @@ function log(text) {
 function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function safeSet(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } }
 
-window.addEventListener("resize", resize);
+// ResizeObserver also catches the canvas getting its first real size after a
+// hidden or late layout, which a window "resize" event does not.
+new ResizeObserver(resize).observe(canvas);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", resize);
 resize(); renderPeers(); connect(); requestAnimationFrame(frame);

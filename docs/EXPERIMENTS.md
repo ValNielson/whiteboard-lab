@@ -14,54 +14,7 @@ Use a different board name prefix per run so results don't mix (e.g. `a-fail-1`,
 
 ## Setup
 
-### A: Cloudflare
-
-```bash
-npm install
-npx wrangler login
-npm run deploy:cf
-```
-
-Then in the dashboard: Workers & Pages → whiteboard-lab → Settings → Domains & Routes → add custom domain `wb.<your-domain>` (your domain must be on Cloudflare DNS).
-
-### Oracle server prep (for B and C)
-
-- Check the CPU: `uname -m`. `aarch64` means an Ampere ARM VM; confirm celld publishes an ARM64 build on its releases page, or use the Docker image.
-- Oracle images block inbound ports twice: open the port in the VCN security list **and** in the VM's own firewall (`sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT`, then persist with `netfilter-persistent save`). This is the most common "why can't I reach it" problem on Oracle.
-- Put TLS in front with Caddy (automatic certificates). Example `Caddyfile`:
-
-```
-wb-celld.<your-domain> {
-  reverse_proxy localhost:<celld-port>
-}
-wb-workerd.<your-domain> {
-  reverse_proxy localhost:8787
-}
-```
-
-- DNS: add A records pointing at the Oracle VM. Set them to **DNS only (grey cloud)** so your latency numbers measure your server, not Cloudflare's proxy. Alternatively use a Cloudflare Tunnel if you can't open ports, but note it in your results since traffic then passes through Cloudflare's edge.
-
-### B: celld
-
-celld's commands and flags are moving quickly (it's beta), so follow its docs for exact syntax: https://celld.dev/docs. The shape of it:
-
-1. **Bucket.** Use an R2 bucket from your Cloudflare account via its S3 API (endpoint `https://<account-id>.r2.cloudflarestorage.com`, region `auto`, with an R2 API token). celld requires conditional writes (compare-and-swap) on the bucket. Some S3-compatible providers don't support them; Oracle Object Storage's S3 layer is unverified, so start with R2.
-2. **Install:** `curl -fsSL celld.dev/install.sh | sh` (or `docker run ghcr.io/denoland/celld`).
-3. **Check the bucket:** run `celld diagnose` with your bucket env vars set. It should report all conditional-write checks passing. Don't proceed if it doesn't.
-4. **Start nodes.** For a real failover test you want two nodes. Either two VMs (Oracle's free ARM allowance can be split in two) or, at minimum, two celld processes on one VM on different ports, both pointing at the same bucket.
-5. **Deploy:** `celld deploy .` from this repo. It reads `wrangler.json`. Note any errors or edits you needed; that's your portability result.
-6. Point Caddy at the nodes (with two nodes, use `reverse_proxy node1:port node2:port` so a dead node is skipped).
-
-### C: workerd (single instance)
-
-`wrangler dev` runs your app on workerd locally, with Durable Objects in single-instance mode. That's an honest stand-in for "self-hosted workerd before celld":
-
-```bash
-npm install
-npm run dev:lan   # listens on 0.0.0.0:8787; state persists in .wrangler/state
-```
-
-Run it under `systemd` or `tmux` so it survives your SSH session.
+Setup steps for all three deployments, with the exact commands, are in the [README](../README.md). This file explains what each experiment measures and what to expect.
 
 ---
 
