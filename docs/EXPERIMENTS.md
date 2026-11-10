@@ -4,8 +4,8 @@ Deployments of the same code, then five experiments run against each. The README
 
 | Name | Where | What it represents |
 |---|---|---|
-| A: Cloudflare | `wb.<your-domain>` | The managed platform: global, Cloudflare runs everything |
-| B: celld | `wb-celld.<your-domain>`, two nodes in an Arcane (Docker) project on your server | Self-hosted and distributed: your machines, your bucket |
+| A: Cloudflare | `whiteboard-lab.mantiswhiteboard.workers.dev` | The managed platform: global, Cloudflare runs everything |
+| B: celld | `wb-celld.skelsemporium.com` (Cloudflare Tunnel), two nodes in an Arcane (Docker) project on your server | Self-hosted and distributed: your machines, your bucket |
 | C: workerd (dropped, optional) | `npm run dev:lan` on any machine | Self-hosted, single instance: what existed before celld |
 
 Use a different board name prefix per run so results don't mix (e.g. `a-fail-1`, `b-fail-1`).

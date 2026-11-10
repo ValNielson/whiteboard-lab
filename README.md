@@ -18,7 +18,7 @@ This README is the runbook. Follow it top to bottom.
 
 ## Where things stand
 
-- **A: Cloudflare** is deployed and working (you did this).
+- **A: Cloudflare** is deployed and working at https://whiteboard-lab.mantiswhiteboard.workers.dev (you did this).
 - **B: celld** is packaged as a Docker Compose stack for Arcane and tested on a laptop with a stand-in bucket. It hasn't run on your server or against R2 yet.
 - **C: plain workerd** is dropped. celld is the self-hosted option worth testing. If you want C later, `npm run dev:lan` runs it on any machine with Node.
 
@@ -75,7 +75,7 @@ Two nodes on one server survive a process crash, not a server crash. That's enou
 
 Track how long setup takes, including debugging. It goes in the "Hours spent operating each" table in [docs/RESULTS.md](docs/RESULTS.md) and is part of the answer.
 
-Below, `example.com` means your real domain.
+The celld fleet will be at `wb-celld.skelsemporium.com`, reached through your Cloudflare Tunnel. The Cloudflare deployment uses its `workers.dev` address.
 
 ---
 
@@ -163,19 +163,30 @@ Run it again whenever you change the app. Running nodes switch to the new versio
 2. Paste the contents of [deploy/celld/compose.yaml](deploy/celld/compose.yaml) into the Compose editor.
 3. Paste the contents of your `deploy/celld/.env` into the **Environment Configuration (.env)** editor.
 4. Click **Create Project**. Arcane pulls the images and starts `node1`, `node2`, and `lb`.
-5. Make it reachable. The load balancer listens on host port `WB_PORT` (8088 by default). Point `wb-celld.example.com` at it the way you normally expose Arcane apps. If 8088 is taken, change `WB_PORT` in the env.
+5. Make it reachable through your Cloudflare Tunnel.
 
-   Only expose the `lb` service. Never publish node ports 8080 or 8081.
+   First, in **Cloudflare DNS for skelsemporium.com**, delete the A records from the earlier plan (`wb-celld` and `wb-workerd`). The tunnel creates its own record for `wb-celld`, and it can't while an A record with that name exists. `wb-workerd` isn't needed any more.
 
-   Write down in RESULTS.md how traffic reaches the server. If it goes through a Cloudflare Tunnel or a proxied (orange cloud) DNS record, your latency numbers include Cloudflare's network.
+   Then in **Zero Trust → Networks → Tunnels → your tunnel → Public Hostname → Add a public hostname**:
+
+   - Subdomain `wb-celld`, domain `skelsemporium.com`
+   - Service type `HTTP`, URL: the load balancer as your `cloudflared` sees it.
+     - If `cloudflared` runs directly on the server: `localhost:8088` (the `WB_PORT` value).
+     - If `cloudflared` runs as a Docker container: use the server's LAN IP and port, such as `192.168.1.20:8088`. Inside a container, `localhost` is the container itself.
+
+   WebSockets work through tunnels without extra settings.
+
+   Only the `lb` service should be reachable. Never publish or route to node ports 8080 or 8081.
+
+   Write in RESULTS.md that B is reached through a Cloudflare Tunnel. Every request then goes laptop → Cloudflare's edge → tunnel → your server, so B's latency includes Cloudflare's network, and a tunnel hiccup looks the same as a node failure to the bots. That's fine for this experiment, as long as you say so in the results.
 
 6. Check it:
 
    ```bash
-   curl https://wb-celld.example.com/api/health
+   curl https://wb-celld.skelsemporium.com/api/health
    ```
 
-   Then open `https://wb-celld.example.com` and draw.
+   Then open `https://wb-celld.skelsemporium.com` and draw.
 
 7. Check both nodes see each other. In Arcane, open a terminal on the `node1` container (or on the server, `docker exec -it whiteboard-lab-node1-1 sh`) and run:
 
@@ -196,8 +207,8 @@ Run the bots from your laptop so you measure the network. Each bot run writes `r
 Shorthand:
 
 ```bash
-A=https://wb.example.com
-B=https://wb-celld.example.com
+A=https://whiteboard-lab.mantiswhiteboard.workers.dev
+B=https://wb-celld.skelsemporium.com
 ```
 
 ### Experiment 1: Portability
@@ -216,7 +227,7 @@ node scripts/verify.mjs --url $B --dir results/b-port
 
 Also check hibernation: leave a board open in a browser for 10 minutes without drawing. Does the socket stay connected? Does the "Board instance" id change?
 
-Fill in the Portability table in RESULTS.md. Things already known from the rehearsal: `wrangler.json` deployed unchanged, and `databaseSize` works. One config difference: the custom domain is set in Cloudflare's dashboard, not in `wrangler.json`, because celld rejects `routes`.
+Fill in the Portability table in RESULTS.md. Things already known from the rehearsal: `wrangler.json` deployed unchanged, and `databaseSize` works. If you ever add a custom domain to the Cloudflare deployment, set it in the dashboard, not in `wrangler.json`: celld rejects `routes`.
 
 ### Experiment 2: Latency
 
