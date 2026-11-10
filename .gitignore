@@ -3,3 +3,4 @@ node_modules/
 results/
 .dev.vars
 .DS_Store
+deploy/celld/.env

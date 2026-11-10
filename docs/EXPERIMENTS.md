@@ -1,12 +1,12 @@
 # Experiment runbook
 
-Three deployments of the same code, then five experiments run against each. Record results in `docs/RESULTS.md`.
+Deployments of the same code, then five experiments run against each. The README has the exact commands; this file explains what each experiment measures and what to expect. Record results in `docs/RESULTS.md`.
 
 | Name | Where | What it represents |
 |---|---|---|
 | A: Cloudflare | `wb.<your-domain>` | The managed platform: global, Cloudflare runs everything |
-| B: celld | `wb-celld.<your-domain>` on Oracle | Self-hosted and distributed: your machines, your bucket |
-| C: workerd | `wb-workerd.<your-domain>` on Oracle | Self-hosted, single instance: what existed before celld |
+| B: celld | `wb-celld.<your-domain>`, two nodes in an Arcane (Docker) project on your server | Self-hosted and distributed: your machines, your bucket |
+| C: workerd (dropped, optional) | `npm run dev:lan` on any machine | Self-hosted, single instance: what existed before celld |
 
 Use a different board name prefix per run so results don't mix (e.g. `a-fail-1`, `b-fail-1`).
 
@@ -14,7 +14,7 @@ Use a different board name prefix per run so results don't mix (e.g. `a-fail-1`,
 
 ## Setup
 
-Setup steps for all three deployments, with the exact commands, are in the [README](../README.md). This file explains what each experiment measures and what to expect.
+Setup steps, with the exact commands, are in the [README](../README.md). C (plain workerd) is no longer part of the plan; its notes below are kept for reference.
 
 ---
 

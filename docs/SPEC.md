@@ -79,4 +79,4 @@ Coordinates are in a fixed 2000×1250 world space. Points per stroke are capped 
 
 - Whether `wrangler.json` deploys without edits (celld stops on unknown keys).
 - Whether WebSocket hibernation, `ctx.storage.sql.databaseSize`, and output-gate semantics behave as on Cloudflare.
-- ARM64 binary availability if your Oracle VM is Ampere (the Docker image is the fallback).
+- ARM64: resolved. The celld image is published for x86-64 and ARM64.

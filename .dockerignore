@@ -1,0 +1,6 @@
+node_modules
+.wrangler
+results
+.git
+.DS_Store
+deploy/celld/.env

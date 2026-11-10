@@ -13,6 +13,7 @@ setInterval(async () => {
   const t0 = performance.now();
   try {
     const r = await fetch(`${base}/api/boards/${board}/stats`, { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) throw Object.assign(new Error(), { name: `HTTP ${r.status}` });
     const s = await r.json();
     if (down) { console.log(`  back after ${((Date.now() - lastOk) / 1000).toFixed(1)}s`); down = false; }
     lastOk = Date.now();

@@ -1,6 +1,6 @@
 # whiteboard-lab
 
-A shared whiteboard with live cursors. It exists to test the Cloudflare Workers + Durable Objects programming model, and the self-hosted versions of it (celld and workerd), for the Deno-joins-Cloudflare investigation.
+A shared whiteboard with live cursors. It exists to test the Cloudflare Workers + Durable Objects programming model, and celld (Deno's self-hosted version of it), for the Deno-joins-Cloudflare investigation.
 
 It's an experiment rig, not a product. There's no auth, no undo, and no zoom. What it does have is built-in measurement (round trip, save time, reconnects, and which board instance is serving you), plus scripts to load-test it, crash it, and check that nothing acknowledged was lost.
 
@@ -8,7 +8,8 @@ This README is the runbook. Follow it top to bottom.
 
 | Doc | What's in it |
 |---|---|
-| This README | Setup for all three deployments, then the experiments in order |
+| This README | Setup for celld on your server with Arcane, then the experiments in order |
+| [deploy/celld/](deploy/celld/) | The Docker Compose stack for Arcane, and the local rehearsal version |
 | [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Longer explanation of each experiment and what to expect |
 | [docs/SPEC.md](docs/SPEC.md) | Design, protocol, durability contract, client fallback behavior |
 | [docs/RESULTS.md](docs/RESULTS.md) | Blank tables to fill in as you go |
@@ -17,16 +18,20 @@ This README is the runbook. Follow it top to bottom.
 
 ## Where things stand
 
-The app is built and tested locally (on workerd, through `wrangler dev`):
+- **A: Cloudflare** is deployed and working (you did this).
+- **B: celld** is packaged as a Docker Compose stack for Arcane and tested on a laptop with a stand-in bucket. It hasn't run on your server or against R2 yet.
+- **C: plain workerd** is dropped. celld is the self-hosted option worth testing. If you want C later, `npm run dev:lan` runs it on any machine with Node.
 
-- Drawing, live cursors, save acknowledgements, and reconnect all work in the browser.
-- 15 bots on 3 boards for 15s: 431 strokes sent, 431 acked, 0 lost. Round trip p50 2ms.
-- Crash test: `kill -9` of the runtime during load, restarted 5s later. The bots reconnected about 1s after the restart, the board instance id changed, and 553 of 553 acknowledged strokes were still stored.
+Results from the local celld rehearsal (2 nodes, RustFS as the bucket, Docker on an M-series Mac). Use these as a baseline, not as real numbers:
 
-Not done yet:
+| | Result |
+|---|---|
+| Deploy with the unchanged `wrangler.json` | Worked, no edits |
+| `ctx.storage.sql.databaseSize` | Supported |
+| 15 bots on 3 boards for 20s | 580 of 580 strokes saved. Round trip p50 1ms, save p50 5.6ms |
+| Failover: `kill -9` of node1 under load (20 bots, 4 boards) | Board back in 10s on node2. 2,755 of 2,755 acknowledged strokes kept. All 4 boards got new instances. |
 
-- Nothing is deployed to Cloudflare or to the Oracle server.
-- celld has not been run at all. The celld steps below come from celld's docs (v0.6.2 beta), not from a test run, so expect some friction. Write it down; that friction is a result.
+For comparison, workerd alone (`wrangler dev`) saved in about 2.5ms. celld is slower because each write is copied to the second node before it's acknowledged.
 
 ---
 
@@ -34,310 +39,172 @@ Not done yet:
 
 | Question | Where the answer comes from |
 |---|---|
-| What does "a better way to build web applications" mean? | Read [src/index.js](src/index.js). The whole backend is one file with no database server, cache, or pub/sub. Note how much you didn't have to set up during Setup A. |
+| What does "a better way to build web applications" mean? | Read [src/index.js](src/index.js). The whole backend is one file with no database server, cache, or pub/sub. The same file runs on Cloudflare and on celld. |
 | How is the model different? | The Board Durable Object: one single-threaded object per board, with its own SQLite, that every user of that board is routed to. Compare it to how you'd build this with Express + Postgres + Redis pub/sub. |
-| What are the tradeoffs? | Experiment 4 (one hot board hits a ceiling), Experiment 3 (failover cost when self-hosting), Experiment 1 (what didn't port). |
+| What are the tradeoffs? | Experiment 4 (one hot board hits a ceiling), Experiment 3 (what self-hosting costs you during failures), Experiment 1 (what didn't port). |
 | What experiment, and how do you judge the hype? | All five experiments, scored with the table at the end of this README. |
+
+---
+
+## How the celld setup works
+
+```
+your laptop                                  your server (Arcane project)
+───────────                                  ────────────────────────────
+npm run deploy:celld ──writes app──▶ R2 bucket ◀──reads app, stores data── node1, node2
+                                                                              ▲
+browser / bots ──▶ your domain ──▶ lb (Caddy, port WB_PORT) ──────────────────┘
+                                   sends to node1; to node2 when node1 is down
+```
+
+- **The bucket is the source of truth.** It holds the deployed app, every board's data, and the leases that decide which node owns which board. When a node dies, its lease runs out and the other node takes over its boards.
+- **Nothing is built on the server.** The Arcane stack uses only published images (`ghcr.io/denoland/celld` and `caddy`). You deploy the app from your laptop into the bucket, and running nodes pick up the new version within seconds, without restarting.
+- **Two nodes plus a load balancer.** Two nodes is the minimum for failover. The load balancer gives clients one address that keeps working when a node dies.
+- **The nodes talk to each other on a private Docker network** (port 8081). That port isn't published and must never be. celld's peer traffic has no encryption or authentication.
+
+Two nodes on one server survive a process crash, not a server crash. That's enough to test celld's failover. It isn't a production setup.
 
 ---
 
 ## What you need
 
-- Node 22 or later on your laptop (`node --version`).
-- Your Cloudflare account, with your domain's DNS on Cloudflare.
-- The Oracle VM, with SSH access and sudo.
-- About half a day. Setup A takes 15 minutes. Setup C takes about 30. Setup B (celld) is the unknown; give it 2 hours.
+- Node 22 or later and Docker on your laptop.
+- Your Cloudflare account (for the R2 bucket).
+- Arcane on your server, and however you normally make an Arcane app reachable at a domain.
+- About 2 hours.
 
-Track how long each setup takes, including debugging. It goes in the "Hours spent operating each" table in [docs/RESULTS.md](docs/RESULTS.md) and is part of the answer.
+Track how long setup takes, including debugging. It goes in the "Hours spent operating each" table in [docs/RESULTS.md](docs/RESULTS.md) and is part of the answer.
 
-Use your real domain wherever this README says `example.com`.
+Below, `example.com` means your real domain.
 
 ---
 
-## Step 0: Run it locally (5 minutes)
+## Step 1: Rehearse celld on your laptop (10 minutes)
 
-On your laptop, from this folder:
+This runs the same stack as the server, but with RustFS (a local S3-compatible store) in place of R2. Do it first so tomorrow's problems are server problems, not celld problems.
 
 ```bash
 npm install
 ```
 
 ```bash
-npm run dev
+npm run rehearse:up
 ```
 
-Open http://localhost:8787 in two browser windows and draw in one. You should see:
+The first run downloads images and takes a few minutes. Then open http://localhost:8088 in two browser windows and draw.
 
-- the other window's cursor moving,
-- your stroke dashed and faded for a moment, then solid (that means the board saved it and sent back an "ack"),
-- the panel in the bottom right showing round trip, save time, and a "Board instance" id.
-
-Add `?b=<name>` to the URL to switch boards. Each board name is a separate Durable Object.
-
-In a second terminal, run a short load test and check it:
+Try a failover by hand. In one terminal:
 
 ```bash
-node scripts/bots.mjs --board smoke --clients 10 --duration 15 --run smoke
+node scripts/stats.mjs --url http://localhost:8088 --board lobby
 ```
 
+In another:
+
 ```bash
-node scripts/verify.mjs --dir results/smoke
+docker kill -s KILL wb-rehearsal-node1-1
 ```
 
-The last line should say `PASS: no acknowledged writes lost`.
+The stats watcher prints `UNREACHABLE`, then `back after 10.0s` or so, with a new instance id. A browser open on the board shows ink waiting to save during the gap, then saving. Start node1 again with `docker start wb-rehearsal-node1-1`.
 
-Leave `npm run dev` running if you want to try the crash test locally first (see Experiment 3).
-
----
-
-## Setup A: Cloudflare (about 15 minutes)
-
-1. Log in and deploy:
-
-   ```bash
-   npx wrangler login
-   ```
-
-   ```bash
-   npm run deploy:cf
-   ```
-
-   It prints a `*.workers.dev` URL. Open it and draw to check it works.
-
-2. Add your domain. In the Cloudflare dashboard, go to **Workers & Pages → whiteboard-lab → Settings → Domains & Routes → Add → Custom domain**, and enter `wb.example.com`.
-
-   Don't put the domain in `wrangler.json`. celld rejects unknown config keys, and the portability test needs the same file to deploy everywhere.
-
-3. Check it: `curl https://wb.example.com/api/health` should return `{"ok":true,...}`.
-
-Write down the git commit (`git rev-parse --short HEAD`) in the Environment table in RESULTS.md. All three deployments should come from the same commit.
-
----
-
-## Prepare the Oracle VM (for Setups B and C)
-
-SSH in and do these once.
-
-1. **Check the CPU.**
-
-   ```bash
-   uname -m
-   ```
-
-   `aarch64` means an Ampere ARM VM. That's fine: celld ships a Linux ARM64 build, and workerd supports it too.
-
-2. **Install Node 22, git, esbuild, and Caddy.** For Oracle Linux or Ubuntu, Node is easiest through nvm:
-
-   ```bash
-   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && source ~/.bashrc && nvm install 22
-   ```
-
-   ```bash
-   npm install -g esbuild
-   ```
-
-   celld's `deploy` command needs `esbuild` on your PATH.
-
-   For Caddy, follow the instructions for your distro at https://caddyserver.com/docs/install.
-
-3. **Get the code onto the VM.** Push this repo somewhere you can clone from, or copy it:
-
-   ```bash
-   rsync -av --exclude node_modules --exclude .wrangler --exclude results ./ <user>@<vm-ip>:~/whiteboard-lab/
-   ```
-
-   Then on the VM:
-
-   ```bash
-   cd ~/whiteboard-lab && npm install
-   ```
-
-4. **Open ports 80 and 443.** Oracle blocks inbound traffic in two places, and you need both:
-
-   - In the Oracle Cloud console: **Networking → Virtual Cloud Networks → your VCN → Security Lists → Default → Add Ingress Rules**. Source `0.0.0.0/0`, TCP, destination ports `80,443`.
-   - On the VM itself:
-
-     ```bash
-     sudo iptables -I INPUT 6 -p tcp -m multiport --dports 80,443 -j ACCEPT
-     ```
-
-     ```bash
-     sudo netfilter-persistent save
-     ```
-
-   If you can't reach the server later, this is the first thing to check.
-
-   **Don't open celld's internal ports (8081, 8091).** celld's peer traffic is unencrypted and unauthenticated at the network level. It must stay on `127.0.0.1` or a private network.
-
-5. **Add DNS records.** In Cloudflare DNS, add two A records pointing at the VM's public IP:
-
-   - `wb-celld` → VM IP
-   - `wb-workerd` → VM IP
-
-   Set both to **DNS only (grey cloud)**. If they're proxied (orange cloud), your latency numbers include Cloudflare's network, and long-lived WebSockets go through Cloudflare's proxy, which changes the failover test.
-
-6. **Configure Caddy.** Put this in `/etc/caddy/Caddyfile`:
-
-   ```
-   wb-celld.example.com {
-     encode gzip
-     reverse_proxy 127.0.0.1:8080 127.0.0.1:8090 {
-       lb_policy first
-       fail_duration 10s
-     }
-   }
-
-   wb-workerd.example.com {
-     encode gzip
-     reverse_proxy 127.0.0.1:8787
-   }
-   ```
-
-   The celld block sends traffic to node 1 and skips it when it's down. `encode gzip` is there because celld doesn't compress static files itself.
-
-   ```bash
-   sudo systemctl reload caddy
-   ```
-
-   Caddy gets TLS certificates for both names automatically, as long as ports 80 and 443 are open and DNS points at the VM.
-
----
-
-## Setup C: workerd, single instance (about 30 minutes)
-
-This is "self-hosted Workers before celld": the open-source runtime running your app, with Durable Objects working on one machine only. `wrangler dev` runs your code on workerd and stores Durable Object data in `.wrangler/state` on local disk.
-
-On the VM, inside `tmux` so it survives SSH disconnects:
+When you're done:
 
 ```bash
-tmux new -s workerd
-```
-
-```bash
-cd ~/whiteboard-lab && npm run dev:lan
-```
-
-Detach with `Ctrl-b d`. Check it from your laptop:
-
-```bash
-curl https://wb-workerd.example.com/api/health
+npm run rehearse:down
 ```
 
 ---
 
-## Setup B: celld (about 2 hours, the unknown one)
-
-celld is Deno's self-hosted implementation of the Workers + Durable Objects model. It runs a fleet of nodes that share one object storage bucket. The bucket holds all the data and decides which node owns each Durable Object, so when a node dies another one can take its objects over.
-
-celld is beta and changes fast. If a command below fails, check https://celld.dev/docs and `celld --help`, and write down what you changed.
-
-### B1. Make an R2 bucket for celld
-
-On your laptop:
+## Step 2: Make the R2 bucket (5 minutes)
 
 ```bash
 npx wrangler r2 bucket create whiteboard-lab-celld
 ```
 
-Then in the Cloudflare dashboard, go to **R2 → Manage API tokens → Create API token**. Choose **Object Read & Write**, limited to the `whiteboard-lab-celld` bucket only. Copy the Access Key ID, the Secret Access Key, and your Account ID.
+Then in the Cloudflare dashboard, go to **R2 → Manage API tokens → Create API token**. Choose **Object Read & Write**, limited to the `whiteboard-lab-celld` bucket only. Copy the Access Key ID, the Secret Access Key, and your Account ID (it's in the S3 endpoint URL the page shows).
 
-Scope it to this one bucket. Whoever has the bucket credentials controls the whole celld fleet.
+Scope it to this one bucket. Whoever has these credentials controls the whole celld fleet.
 
-### B2. Install celld and set the bucket variables
-
-On the VM:
+Create the env file and fill it in:
 
 ```bash
-curl -fsSL https://celld.dev/install.sh | sh
+cp deploy/celld/.env.example deploy/celld/.env
 ```
 
-If it says to, add `~/.local/bin` to your PATH. Then create `~/celld.env` (fill in your values):
+Don't put quotes around the values; `docker run --env-file` keeps them literally. The file is gitignored.
+
+Optional check that R2 supports what celld needs (it should):
 
 ```bash
-export AWS_ACCESS_KEY_ID=<r2 access key id>
-export AWS_SECRET_ACCESS_KEY=<r2 secret>
-export AWS_REGION=auto
-export S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
-export CELLD_BUCKET=s3://whiteboard-lab-celld
+docker run --rm --env-file deploy/celld/.env ghcr.io/denoland/celld:0.6.3 diagnose
 ```
+
+Look for `ok bucket conditional write: create, reject-create, update, reject-stale`.
+
+---
+
+## Step 3: Deploy the app into the bucket (2 minutes)
+
+From your laptop:
 
 ```bash
-chmod 600 ~/celld.env && source ~/celld.env
+npm run deploy:celld
 ```
 
-Record the version (`celld --version`) in RESULTS.md.
+This builds a small image with celld and esbuild, then runs `celld deploy`, which bundles `src/index.js` and `public/` and uploads them to the bucket. It reads the same `wrangler.json` Cloudflare used. Write down any errors or changes you needed; that's the main Experiment 1 result.
 
-### B3. Deploy the app into the bucket
+Run it again whenever you change the app. Running nodes switch to the new version on their own.
 
-```bash
-cd ~/whiteboard-lab && celld deploy . --bucket "$CELLD_BUCKET" --endpoint "$S3_ENDPOINT" --region "$AWS_REGION"
-```
+---
 
-This reads `wrangler.json`, the same file Cloudflare used. **This is Experiment 1's main data point.** Write down every error and every change you had to make.
+## Step 4: Start the fleet in Arcane (15 minutes)
 
-### B4. Start two nodes
+1. In Arcane, go to **Projects → Create Project**. Name it `whiteboard-lab`.
+2. Paste the contents of [deploy/celld/compose.yaml](deploy/celld/compose.yaml) into the Compose editor.
+3. Paste the contents of your `deploy/celld/.env` into the **Environment Configuration (.env)** editor.
+4. Click **Create Project**. Arcane pulls the images and starts `node1`, `node2`, and `lb`.
+5. Make it reachable. The load balancer listens on host port `WB_PORT` (8088 by default). Point `wb-celld.example.com` at it the way you normally expose Arcane apps. If 8088 is taken, change `WB_PORT` in the env.
 
-Two nodes is the minimum for a failover test. On a single VM, run two celld processes on different ports, both using the same bucket. Use two tmux windows:
+   Only expose the `lb` service. Never publish node ports 8080 or 8081.
 
-```bash
-tmux new -s celld1
-```
+   Write down in RESULTS.md how traffic reaches the server. If it goes through a Cloudflare Tunnel or a proxied (orange cloud) DNS record, your latency numbers include Cloudflare's network.
 
-```bash
-source ~/celld.env && celld --bucket "$CELLD_BUCKET" --endpoint "$S3_ENDPOINT" --region "$AWS_REGION" --listen 127.0.0.1:8080 --internal-listen 127.0.0.1:8081 --advertise 127.0.0.1:8081
-```
+6. Check it:
 
-Detach (`Ctrl-b d`), then:
+   ```bash
+   curl https://wb-celld.example.com/api/health
+   ```
 
-```bash
-tmux new -s celld2
-```
+   Then open `https://wb-celld.example.com` and draw.
 
-```bash
-source ~/celld.env && celld --bucket "$CELLD_BUCKET" --endpoint "$S3_ENDPOINT" --region "$AWS_REGION" --listen 127.0.0.1:8090 --internal-listen 127.0.0.1:8091 --advertise 127.0.0.1:8091
-```
+7. Check both nodes see each other. In Arcane, open a terminal on the `node1` container (or on the server, `docker exec -it whiteboard-lab-node1-1 sh`) and run:
 
-If the two processes fight over a local data directory, look in `celld --help` for a data-directory flag and give each node its own.
+   ```bash
+   celld diagnose
+   ```
 
-Nodes find each other through the bucket. There's no join command.
+   It should list two node leases. The node logs print a line every second; that's normal for this beta.
 
-Two processes on one VM can survive a process crash, but not a VM crash. If you want the stronger test, split Oracle's free ARM allowance into two VMs, connect them with Tailscale, and use the Tailscale IPs for `--internal-listen` and `--advertise`.
-
-### B5. Check the fleet
-
-```bash
-celld diagnose --bucket "$CELLD_BUCKET" --endpoint "$S3_ENDPOINT" --region "$AWS_REGION"
-```
-
-It should list both nodes as live. Then from your laptop:
-
-```bash
-curl https://wb-celld.example.com/api/health
-```
-
-Open `https://wb-celld.example.com` in a browser and draw.
+   Container names come from the Arcane project name. This README assumes `whiteboard-lab`, so `whiteboard-lab-node1-1`. If yours differ, check with `docker ps`.
 
 ---
 
 ## The experiments
 
-Run these in order. Use a board name prefix for each deployment and run so results don't mix: `a-` for Cloudflare, `b-` for celld, `c-` for workerd. Each bot run writes `results/<run>/summary.json`, `timeline.json`, and the list of acked stroke ids.
+Run the bots from your laptop so you measure the network. Each bot run writes `results/<run>/summary.json`, `timeline.json`, and the list of acked stroke ids. Use a board name prefix per deployment so results don't mix: `a-` for Cloudflare, `b-` for celld.
 
-Run the bots from your laptop, not from the VM, so you measure the network.
-
-Shorthand used below:
+Shorthand:
 
 ```bash
 A=https://wb.example.com
 B=https://wb-celld.example.com
-C=https://wb-workerd.example.com
 ```
 
 ### Experiment 1: Portability
 
-Does the same code run on all three without changes?
+Does the same code run on both without changes?
 
-For each of A, B, C: open it in two browser windows, draw, and check that cursors and strokes sync both ways. Then run a quick check, for example on B:
+For A and B: open the site in two browser windows, draw, and check that cursors and strokes sync both ways. Then:
 
 ```bash
 node scripts/bots.mjs --url $B --board b-port --clients 5 --duration 20 --run b-port
@@ -347,33 +214,32 @@ node scripts/bots.mjs --url $B --board b-port --clients 5 --duration 20 --run b-
 node scripts/verify.mjs --url $B --dir results/b-port
 ```
 
-Things that might differ on celld, so check them on purpose:
+Also check hibernation: leave a board open in a browser for 10 minutes without drawing. Does the socket stay connected? Does the "Board instance" id change?
 
-- **Stats.** Open `$B/api/boards/b-port/stats`. If `databaseBytes` is `null`, celld doesn't support `ctx.storage.sql.databaseSize`. That's a portability gap; the app already handles it.
-- **Hibernation.** Leave a board open in a browser for 10 minutes without drawing. Does the instance id change? Does the socket stay connected?
-
-Fill in the Portability table in RESULTS.md. **Pass:** zero code changes.
+Fill in the Portability table in RESULTS.md. Things already known from the rehearsal: `wrangler.json` deployed unchanged, and `databaseSize` works. One config difference: the custom domain is set in Cloudflare's dashboard, not in `wrangler.json`, because celld rejects `routes`.
 
 ### Experiment 2: Latency
-
-How fast is each one, and from where?
 
 ```bash
 node scripts/bots.mjs --url $A --board a-lat --boards 10 --clients 5 --duration 120 --run a-lat
 ```
 
-Repeat with `$B` (`b-lat`) and `$C` (`c-lat`). Take round trip p50/p99 and save p50/p99 from each `summary.json`.
+```bash
+node scripts/bots.mjs --url $B --board b-lat --boards 10 --clients 5 --duration 120 --run b-lat
+```
+
+Take round trip p50/p99 and save p50/p99 from each `summary.json`.
 
 What to look for:
 
-- **Save time** is where the platforms differ most. Cloudflare saves to local storage with replicas. celld with two nodes waits for a follower node to have the write; with one node, every write waits for the bucket (celld says about 90ms in the same region; R2 may be farther away from Oracle than that). workerd writes to local disk.
-- **Distance.** If you can, run it again from a machine in another region (a cheap cloud VM, or a coworker). Cloudflare places each Durable Object near whoever first used it, so `a-lat` boards created from your laptop live near you. The Oracle VM is in one place for everyone.
+- **Save time.** On celld, the node acknowledges a write once the other node has it on disk, then uploads to R2 in the background. If one node is down, every write waits for R2 instead. Try a run with node2 stopped to see that cost.
+- **Distance.** If you can, run it again from a machine in another region. Cloudflare places each board near whoever first used it. Your server is in one place for everyone.
 
 ### Experiment 3: Failover (the main one)
 
-When a server dies during a session, do clients recover, and is any acknowledged stroke lost?
+When a node dies during a session, do clients recover, and is any acknowledged stroke lost?
 
-Open three terminals on your laptop and the board in a browser (`$B/?b=b-fail-1`).
+Open the board in a browser (`$B/?b=b-fail-1`) and two terminals on your laptop.
 
 Terminal 1, the load:
 
@@ -381,23 +247,19 @@ Terminal 1, the load:
 node scripts/bots.mjs --url $B --board b-fail-1 --clients 20 --duration 180 --stroke-every 0.5 --run b-fail-1
 ```
 
-Terminal 2, the watcher (prints the instance id and stroke count every second, and how long the board was unreachable):
+Terminal 2, the watcher. It prints the instance id every second, and how long the board was unreachable:
 
 ```bash
 node scripts/stats.mjs --url $B --board b-fail-1
 ```
 
-Terminal 3, SSH to the VM. At about 60 seconds, kill the node that owns the board. Start with node 1, since Caddy sends traffic there first:
+At about 60 seconds, kill node1. The load balancer sends everything to node1 while it's healthy, so node1 owns the board. On the server:
 
 ```bash
-pgrep -af "celld .*8080"
+docker kill -s KILL whiteboard-lab-node1-1
 ```
 
-```bash
-kill -9 <that pid>
-```
-
-If the board keeps working without any blip, node 2 owned it. Restart node 1 and kill node 2 instead on the next run (`b-fail-2`).
+Use `docker kill -s KILL`, not Arcane's Stop button. Stop shuts the node down gracefully so it can hand its boards over. That's worth testing too as a separate run, but it's not a crash.
 
 After the bots finish:
 
@@ -405,21 +267,11 @@ After the bots finish:
 node scripts/verify.mjs --url $B --dir results/b-fail-1
 ```
 
-Record: time from kill until the stats watcher prints `back after`, strokes lost (from verify), reconnects (from `summary.json`), and whether the instance id changed. celld claims about 20 seconds to fail over and zero acknowledged writes lost.
+Record: the `back after` time from the watcher, strokes lost (from verify), reconnects (from `summary.json`), and whether the instance id changed. celld claims about 20 seconds to fail over and zero acknowledged writes lost. The rehearsal got 10 seconds and zero lost.
 
-**Then do the same for C** with `$C` and board `c-fail-1`. Kill the runtime on the VM:
+Start node1 again afterwards (Arcane's Start button, or `docker start whiteboard-lab-node1-1`).
 
-```bash
-pkill -9 -f workerd; pkill -9 -f "wrangler-dist/cli.js dev"
-```
-
-Wait about 10 seconds, then restart it in the `workerd` tmux session (`npm run dev:lan`). Expected: the board is down until you restart it, nothing takes over, and the data survives because it's on local disk. Recovery time is however long it takes you to notice and restart it.
-
-Kill both processes. If you only kill workerd, wrangler's proxy keeps the port open with nothing behind it, and clients hang. The client's 5-second connect timeout is there for exactly that case, so you can try it deliberately to see the client handle it.
-
-**For A**, you can't kill Cloudflare's servers. Instead, look up Durable Objects incidents at https://www.cloudflarestatus.com/history and note them.
-
-You can rehearse this on your laptop first against `npm run dev`. That's how the 553/553 baseline above was measured.
+For A you can't kill Cloudflare's servers. Look up Durable Objects incidents at https://www.cloudflarestatus.com/history and note them instead.
 
 ### Experiment 4: Hot board (the tradeoff)
 
@@ -429,32 +281,32 @@ Where does one board's single thread run out of capacity?
 node scripts/bots.mjs --url $A --board a-hot-1 --clients 10 --ramp 10 --ramp-every 15 --max-clients 500 --duration 300 --cursor-hz 30 --run a-hot-1
 ```
 
-This adds 10 bots every 15 seconds. Every cursor movement goes to everyone else on the board, so traffic grows with roughly the square of the number of people. Watch the report printed every 5 seconds. The ceiling is the bot count where round trip p99 goes above about 100ms, or where bots start reconnecting.
+This adds 10 bots every 15 seconds. Every cursor movement goes to everyone else on the board, so traffic grows with roughly the square of the number of people. The ceiling is the bot count where round trip p99 goes above about 100ms, or where bots start reconnecting.
 
-Then spread the same number of bots over many boards and compare:
+Then spread bots over many boards and compare:
 
 ```bash
 node scripts/bots.mjs --url $A --board a-spread --boards 50 --clients 10 --duration 120 --cursor-hz 30 --run a-spread
 ```
 
-Repeat both for B and C. Watch your laptop's CPU in Activity Monitor; if it's maxed out, the bots are the bottleneck, not the server. Stop around 200 bots per run if it is.
+Repeat both with `$B`. On celld, all boards go to node1 first (that's how the load balancer is set up), so "many boards" on celld mostly measures one node. Watch your laptop's CPU; if it's maxed out, the bots are the bottleneck. Stop around 200 bots per run if it is.
 
 This is the concrete answer to "why would you not want this?": one board can't spread across machines. If one room gets huge, you have to split it yourself.
 
 ### Experiment 5: Idle cost and wake-up
 
-What does an idle board cost, and how long does it take to wake up?
-
 1. Create 200 boards with a little data each:
 
    ```bash
-   node scripts/bots.mjs --url $A --board a-idle --boards 200 --clients 1 --duration 20 --run a-idle
+   node scripts/bots.mjs --url $B --board b-idle --boards 200 --clients 1 --duration 20 --run b-idle
    ```
 
-2. Leave them alone for 30 minutes.
-3. Open `$A/?b=a-idle-7` in a browser. Note whether the instance id is new (it was evicted from memory) and what the first round trip is.
+2. Note the R2 operation counts: **R2 → whiteboard-lab-celld → Metrics** (Class A and Class B operations).
+3. Leave everything alone for 30 minutes.
+4. Check the operation counts again. celld claims idle boards cost almost nothing in bucket operations.
+5. Open `$B/?b=b-idle-7`. Note whether the instance id is new (it was evicted from memory) and the first round trip.
 
-Repeat on B. For cost, compare Cloudflare's Workers usage page for the time period against celld's VM cost plus R2 operations (**R2 → whiteboard-lab-celld → Metrics** shows Class A and B operation counts). celld claims idle boards cost close to nothing in bucket operations; check the operation count before and after the idle period.
+Repeat steps 1, 3, and 5 on A, and compare Cloudflare's Workers usage page for the same period. For B's cost, add your server's monthly cost to R2's storage and operation charges.
 
 ---
 
@@ -462,9 +314,9 @@ Repeat on B. For cost, compare Cloudflare's Workers usage page for the time peri
 
 There's no auth, so anyone with a URL can draw on or clear a board. Take things down when you're done:
 
-- Cloudflare: `npx wrangler delete`
-- Oracle: stop the tmux sessions (`tmux kill-server`) and remove the Caddy blocks.
-- R2: delete the `whiteboard-lab-celld` bucket's contents and the API token.
+- **Arcane:** stop and delete the `whiteboard-lab` project, including its volumes.
+- **R2:** empty and delete the `whiteboard-lab-celld` bucket, and delete the API token.
+- **Cloudflare Worker:** `npx wrangler delete`.
 
 ---
 
@@ -484,7 +336,16 @@ Fill this in at the end, using what's in RESULTS.md.
 
 ## Reference
 
-### Scripts
+### npm scripts
+
+| Script | What it does |
+|---|---|
+| `npm run dev` | Run locally on workerd (wrangler) at http://localhost:8787 |
+| `npm run deploy:cf` | Deploy to Cloudflare |
+| `npm run deploy:celld` | Deploy to the celld bucket in `deploy/celld/.env` (uses Docker) |
+| `npm run rehearse:up` / `rehearse:down` | Start or delete the local celld stack at http://localhost:8088 |
+
+### Test scripts
 
 | Command | What it does |
 |---|---|
@@ -515,16 +376,21 @@ Fill this in at the end, using what's in RESULTS.md.
 | `/api/boards/<id>/strokes` | All stored stroke ids (add `?full=1` for the strokes) |
 | `/api/boards/<id>/ws` | The WebSocket the client and bots use |
 
+### Files
+
+```
+src/index.js                     Worker router + Board Durable Object
+public/                          browser client (no build step)
+scripts/                         bots.mjs, verify.mjs, stats.mjs
+wrangler.json                    config read by wrangler and by celld
+deploy/celld/compose.yaml        the Arcane stack: node1, node2, lb
+deploy/celld/.env.example        settings for the stack and for deploy:celld
+deploy/celld/Dockerfile.deploy   celld + esbuild, used by deploy:celld
+deploy/celld/compose.local.yaml  rehearsal additions: RustFS bucket + auto-deploy
+deploy/celld/local.env           throwaway settings for the rehearsal
+docs/                            spec, experiment details, results template
+```
+
 ### How it works in one paragraph
 
 Every board is one Durable Object: a tiny single-threaded server with its own SQLite database. Cloudflare (or celld) routes every connection for board `lobby` to the same object, wherever it runs. The object relays cursors to everyone on the board without storing them, saves finished strokes to SQLite before confirming them, and can be evicted from memory when idle while WebSockets stay connected. The Worker in front is a 20-line router. There's no separate database, cache, or pub/sub service.
-
-### Layout
-
-```
-src/index.js        Worker router + Board Durable Object
-public/             browser client (no build step)
-scripts/            bots.mjs, verify.mjs, stats.mjs
-wrangler.json       config read by wrangler and by celld
-docs/               spec, experiment details, results template
-```

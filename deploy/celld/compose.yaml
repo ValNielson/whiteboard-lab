@@ -1,0 +1,88 @@
+# whiteboard-lab: a two-node celld fleet behind a small load balancer.
+#
+# This is the stack you paste into Arcane. It only uses published images, so
+# nothing is built on the server and no app code lives here: the app is
+# deployed into the bucket from your laptop (`npm run deploy:celld`), and the
+# nodes pick up new versions from the bucket on their own.
+#
+#   browser ──▶ lb (Caddy, :${WB_PORT}) ──▶ node1:8080  (or node2 if node1 is down)
+#                                              │  ▲
+#                                     peer traffic on 8081 (private network only)
+#                                              ▼  │
+#                                            node2:8080
+#   both nodes ──▶ the fleet bucket (R2): app code, Durable Object data, leases
+#
+# Settings come from a .env file next to this one (Arcane: the project's
+# environment). See .env.example.
+
+x-celld-node: &celld-node
+  image: ghcr.io/denoland/celld:${CELLD_VERSION:-0.6.3}
+  restart: unless-stopped
+  environment: &celld-env
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY}
+    AWS_REGION: ${AWS_REGION:-auto}
+    S3_ENDPOINT: ${S3_ENDPOINT:?set S3_ENDPOINT}
+    CELLD_BUCKET: ${CELLD_BUCKET:?set CELLD_BUCKET}
+    # Public listener (the load balancer talks to this).
+    CELLD_ADDR: 0.0.0.0:8080
+    # Peer listener. Reachable only inside this compose network: it is not
+    # published, and it must never be (no TLS, unauthenticated operator routes).
+    CELLD_INTERNAL_ADDR: 0.0.0.0:8081
+    CELLD_WATCH: /var/lib/celld/state
+  networks: [fleet]
+
+services:
+  node1:
+    <<: *celld-node
+    hostname: node1
+    environment:
+      <<: *celld-env
+      CELLD_NODE: node1
+      CELLD_ADVERTISE: node1:8081
+    volumes: [node1-state:/var/lib/celld]
+
+  node2:
+    <<: *celld-node
+    hostname: node2
+    environment:
+      <<: *celld-env
+      CELLD_NODE: node2
+      CELLD_ADVERTISE: node2:8081
+    volumes: [node2-state:/var/lib/celld]
+
+  # Sends traffic to node1, and to node2 while node1 is down. Without this,
+  # killing a node would also kill the only address clients know.
+  lb:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [node1, node2]
+    ports:
+      - "${WB_PORT:-8088}:80"
+    networks: [fleet]
+    # The config is written inline so the whole stack is this one file (no
+    # extra files to upload to Arcane). "first" means node1 serves everything
+    # while it's healthy, so node1 is the one to kill in the failover test.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /etc/caddy/Caddyfile <<'CADDY'
+        :80 {
+          reverse_proxy node1:8080 node2:8080 {
+            lb_policy first
+            lb_try_duration 5s
+            fail_duration 10s
+            health_uri /api/health
+            health_interval 2s
+            health_timeout 1s
+          }
+        }
+        CADDY
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+
+volumes:
+  node1-state:
+  node2-state:
+
+networks:
+  fleet:

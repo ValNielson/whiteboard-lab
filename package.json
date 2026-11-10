@@ -3,14 +3,19 @@
   "private": true,
   "type": "module",
   "description": "A collaborative whiteboard used to test the Workers + Durable Objects model on Cloudflare, celld, and workerd.",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "dev:lan": "wrangler dev --ip 0.0.0.0 --port 8787",
     "deploy:cf": "wrangler deploy",
     "bots": "node scripts/bots.mjs",
     "verify": "node scripts/verify.mjs",
-    "stats": "node scripts/stats.mjs"
+    "stats": "node scripts/stats.mjs",
+    "deploy:celld": "docker build -q -f deploy/celld/Dockerfile.deploy -t whiteboard-lab-deploy . && docker run --rm --env-file deploy/celld/.env whiteboard-lab-deploy",
+    "rehearse:up": "docker compose -p wb-rehearsal -f deploy/celld/compose.yaml -f deploy/celld/compose.local.yaml --env-file deploy/celld/local.env up -d --build",
+    "rehearse:down": "docker compose -p wb-rehearsal -f deploy/celld/compose.yaml -f deploy/celld/compose.local.yaml --env-file deploy/celld/local.env down -v"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

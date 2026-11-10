@@ -1,0 +1,45 @@
+# Local rehearsal: the same fleet as compose.yaml, with RustFS standing in for
+# R2 and a one-shot service that deploys the app into it. From the repo root:
+#
+#   npm run rehearse:up      (start; builds and deploys the app)
+#   npm run rehearse:down    (stop and delete all data)
+#
+# Then open http://localhost:8088.
+
+services:
+  # RustFS: an S3-compatible store that passes celld's conditional-write
+  # checks. (MinIO no longer publishes Docker images.)
+  s3:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: ${AWS_ACCESS_KEY_ID}
+      RUSTFS_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
+    networks: [fleet]
+
+  bucket:
+    image: amazon/aws-cli:latest
+    depends_on: [s3]
+    entrypoint: ["sh", "-c", "for i in $$(seq 30); do aws --endpoint-url http://s3:9000 s3 mb s3://whiteboard-lab-celld 2>&1 | grep -qE 'make_bucket|BucketAlready' && exit 0; sleep 1; done; exit 1"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+    networks: [fleet]
+
+  deploy:
+    build:
+      context: ../..
+      dockerfile: deploy/celld/Dockerfile.deploy
+    depends_on: { bucket: { condition: service_completed_successfully } }
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      CELLD_BUCKET: ${CELLD_BUCKET}
+    networks: [fleet]
+
+  node1:
+    depends_on: { bucket: { condition: service_completed_successfully } }
+  node2:
+    depends_on: { bucket: { condition: service_completed_successfully } }
