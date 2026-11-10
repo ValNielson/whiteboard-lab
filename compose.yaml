@@ -26,7 +26,7 @@ x-celld-node: &celld-node
   image: ghcr.io/denoland/celld:0.6.3
   restart: unless-stopped
   depends_on:
-    bucket: { condition: service_completed_successfully }
+    bucket: { condition: service_healthy }
   networks: [fleet]
 
 services:
@@ -41,17 +41,24 @@ services:
     volumes: [s3-data:/data]
     networks: [fleet]
 
-  # Runs once: creates the bucket if it doesn't exist yet, then exits.
+  # One-time job: creates the bucket if it doesn't exist yet. It then stays
+  # running, idle, and reports healthy, because Arcane treats any container
+  # that exits (even successfully) as a failed deploy.
   bucket:
     image: amazon/aws-cli:2.31.0
     depends_on: [s3]
     restart: "no"
     environment:
       <<: *s3-login
-    entrypoint: ["sh", "-c", "for i in $$(seq 60); do aws --endpoint-url http://s3:9000 s3 mb s3://whiteboard-lab 2>&1 | grep -qE 'make_bucket|BucketAlready' && exit 0; sleep 1; done; exit 1"]
+    entrypoint: ["sh", "-c", "for i in $$(seq 60); do aws --endpoint-url http://s3:9000 s3 mb s3://whiteboard-lab 2>&1 | grep -qE 'make_bucket|BucketAlready' && { echo 'bucket ready'; touch /tmp/done; exec sleep infinity; }; sleep 1; done; echo 'could not create bucket'; exit 1"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/done"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
     networks: [fleet]
 
-  # Runs once per deploy: bundles the app and uploads it to the bucket. The
+  # One-time job per deploy: bundles the app and uploads it to the bucket. The
   # nodes notice the new version and switch to it without restarting.
   #
   # The app code comes straight from GitHub (the `context` URL), and the build
@@ -72,10 +79,16 @@ services:
         COPY wrangler.json ./
         COPY src ./src
         COPY public ./public
-        ENTRYPOINT ["/usr/local/bin/celld", "deploy", "/app"]
+        ENTRYPOINT ["sh", "-c", "celld deploy /app && touch /tmp/done && exec sleep infinity"]
     depends_on:
-      bucket: { condition: service_completed_successfully }
+      bucket: { condition: service_healthy }
     restart: "no"
+    # Same as `bucket`: stays running after deploying, healthy once it worked.
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/done"]
+      interval: 2s
+      timeout: 2s
+      retries: 90
     environment:
       <<: *s3-login
     networks: [fleet]

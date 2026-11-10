@@ -101,12 +101,12 @@ browser / bots ──▶ wb-celld.skelsemporium.com ──▶ your tunnel ──
 | Service | What it does | Normal state in Arcane |
 |---|---|---|
 | `s3` | The storage celld needs: an S3-compatible bucket ([RustFS](https://rustfs.com)) running in the stack | Running |
-| `bucket` | Creates the bucket the first time, then exits | Exited (0) |
-| `deploy` | Downloads the app code from GitHub (`master`), builds it, and puts it in the bucket, then exits | Exited (0) |
+| `bucket` | Creates the bucket the first time, then sits idle | Running, healthy |
+| `deploy` | Downloads the app code from GitHub (`master`), builds it, puts it in the bucket, then sits idle | Running, healthy |
 | `node1`, `node2` | Two celld servers. The bucket decides which one owns each board; if one dies, the other takes its boards over. | Running |
 | `lb` | The one address your tunnel points at. Sends traffic to node1, or node2 when node1 is down. | Running |
 
-"Exited (0)" on `bucket` and `deploy` is correct. They're one-time jobs.
+`bucket` and `deploy` are one-time jobs that stay running afterwards, because Arcane treats an exited container as a failed deploy. If either shows "unhealthy" or "Exited", open its logs: the job failed.
 
 **What gets deployed:** whatever is pushed to `master` on GitHub, not changes sitting on your laptop. To ship a change: commit, push, then redeploy the project in Arcane (or wait for Auto Sync). The local rehearsal (`npm run rehearse:up`) also builds from GitHub.
 
