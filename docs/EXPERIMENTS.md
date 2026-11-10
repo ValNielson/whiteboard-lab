@@ -99,9 +99,9 @@ The bots run on one machine, so make sure the bot machine isn't the bottleneck (
 
 For cost, compare:
 - Workers: Cloudflare's dashboard usage for the period (requests, duration, storage).
-- celld: your server's cost plus R2 storage and operations (R2 dashboard shows Class A/B operations).
+- celld: your server's cost, and its CPU and memory use while the boards sit idle.
 
-celld claims inactive cells cost roughly nothing in bucket operations; check that against R2's operation counts.
+celld claims inactive cells cost roughly nothing; check the nodes' CPU and memory while idle.
 
 ---
 

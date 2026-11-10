@@ -1,0 +1,123 @@
+# whiteboard-lab on celld: everything in one stack, no outside services.
+#
+# This is the file Arcane runs (Git sync, compose path `compose.yaml`, with
+# "Sync Files" on so the app code comes along). The same file runs on your
+# laptop with `npm run rehearse:up`.
+#
+#   browser ──▶ your tunnel ──▶ lb :WB_PORT ──▶ node1  (node2 if node1 is down)
+#                                                │  ▲  peer traffic, private
+#                                                ▼  │
+#                                              node2
+#   node1, node2 ──▶ s3 (RustFS): app code, board data, ownership leases
+#   deploy (runs once) ──▶ builds src/ + public/ and puts them in s3
+#
+# Nothing here needs a secret from anywhere else. The storage login below is
+# one you make up; the defaults work because the storage service is only
+# reachable inside this stack (no published ports).
+
+x-s3-login: &s3-login
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-whiteboard}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-whiteboard-lab-storage}
+  AWS_REGION: us-east-1
+  S3_ENDPOINT: http://s3:9000
+  CELLD_BUCKET: s3://whiteboard-lab
+
+x-celld-node: &celld-node
+  image: ghcr.io/denoland/celld:0.6.3
+  restart: unless-stopped
+  depends_on:
+    bucket: { condition: service_completed_successfully }
+  networks: [fleet]
+
+services:
+  # The bucket celld keeps everything in. RustFS is an S3-compatible store
+  # that passes celld's conditional-write checks.
+  s3:
+    image: rustfs/rustfs:1.0.4
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-whiteboard}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-whiteboard-lab-storage}
+    volumes: [s3-data:/data]
+    networks: [fleet]
+
+  # Runs once: creates the bucket if it doesn't exist yet, then exits.
+  bucket:
+    image: amazon/aws-cli:2.31.0
+    depends_on: [s3]
+    restart: "no"
+    environment:
+      <<: *s3-login
+    entrypoint: ["sh", "-c", "for i in $$(seq 60); do aws --endpoint-url http://s3:9000 s3 mb s3://whiteboard-lab 2>&1 | grep -qE 'make_bucket|BucketAlready' && exit 0; sleep 1; done; exit 1"]
+    networks: [fleet]
+
+  # Runs once per deploy: bundles the app and uploads it to the bucket. The
+  # nodes notice the new version and switch to it without restarting.
+  deploy:
+    build:
+      context: .
+      dockerfile: deploy/celld/Dockerfile.deploy
+    depends_on:
+      bucket: { condition: service_completed_successfully }
+    restart: "no"
+    environment:
+      <<: *s3-login
+    networks: [fleet]
+
+  node1:
+    <<: *celld-node
+    hostname: node1
+    environment:
+      <<: *s3-login
+      CELLD_NODE: node1
+      CELLD_ADDR: 0.0.0.0:8080
+      CELLD_INTERNAL_ADDR: 0.0.0.0:8081   # peers only; never publish this
+      CELLD_ADVERTISE: node1:8081
+      CELLD_WATCH: /var/lib/celld/state
+    volumes: [node1-state:/var/lib/celld]
+
+  node2:
+    <<: *celld-node
+    hostname: node2
+    environment:
+      <<: *s3-login
+      CELLD_NODE: node2
+      CELLD_ADDR: 0.0.0.0:8080
+      CELLD_INTERNAL_ADDR: 0.0.0.0:8081
+      CELLD_ADVERTISE: node2:8081
+      CELLD_WATCH: /var/lib/celld/state
+    volumes: [node2-state:/var/lib/celld]
+
+  # The one thing to point your tunnel at. Sends traffic to node1, and to
+  # node2 while node1 is down, so node1 is the one to kill in the failover test.
+  lb:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on: [node1, node2]
+    ports:
+      - "${WB_PORT:-8088}:80"
+    networks: [fleet]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /etc/caddy/Caddyfile <<'CADDY'
+        :80 {
+          reverse_proxy node1:8080 node2:8080 {
+            lb_policy first
+            lb_try_duration 5s
+            fail_duration 10s
+            health_uri /api/health
+            health_interval 2s
+            health_timeout 1s
+          }
+        }
+        CADDY
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+
+volumes:
+  s3-data:
+  node1-state:
+  node2-state:
+
+networks:
+  fleet:

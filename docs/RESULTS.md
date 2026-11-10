@@ -12,7 +12,7 @@ The **Local** column is a baseline from `npm run dev` (workerd, one process on a
 | Version / commit | | celld 0.6.3, commit: | wrangler 4.158.0 |
 | Machines | Cloudflare network | | MacBook (M-series) |
 | How traffic arrives | Direct to Cloudflare | Cloudflare Tunnel → Arcane `lb` | localhost |
-| Storage | Durable Object SQLite | R2 bucket + node disks | local disk |
+| Storage | Durable Object SQLite | RustFS bucket in the stack + node disks | local disk |
 | Bot location(s) | | | same machine |
 
 ## 1. Portability
@@ -32,7 +32,7 @@ The **Local** column is a baseline from `npm run dev` (workerd, one process on a
 | Workers, from far away | | | | |
 | celld, from laptop | | | | |
 | celld, from far away | | | | |
-| celld, node2 stopped (writes wait for R2) | | | | |
+| celld, node2 stopped (writes wait for the bucket) | | | | |
 | Local (baseline) | 2 | 8.5 | 2.6 | 10.8 |
 
 ## 3. Failover
@@ -53,7 +53,7 @@ The **Local** column is a baseline from `npm run dev` (workerd, one process on a
 
 ## 5. Idle cost and wake-up
 
-| | Wake-up first RTT | Hibernated? | R2 operations while idle | Monthly cost estimate (200 boards) |
+| | Wake-up first RTT | Hibernated? | Server CPU / memory while idle | Monthly cost estimate (200 boards) |
 |---|---|---|---|---|
 | Workers | | | n/a | |
 | celld | | | | |

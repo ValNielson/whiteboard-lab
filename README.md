@@ -9,7 +9,7 @@ This README is the runbook. Follow it top to bottom.
 | Doc | What's in it |
 |---|---|
 | This README | The three workflows (local, Workers, celld), then the experiments |
-| [deploy/celld/](deploy/celld/) | The Docker Compose stack for Arcane, and the local rehearsal version |
+| [compose.yaml](compose.yaml) | The celld stack Arcane runs (and `npm run rehearse:up` runs locally) |
 | [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Longer explanation of each experiment and what to expect |
 | [docs/SPEC.md](docs/SPEC.md) | Design, protocol, durability contract, client fallback behavior |
 | [docs/RESULTS.md](docs/RESULTS.md) | Blank tables to fill in as you go |
@@ -84,154 +84,110 @@ curl https://whiteboard-lab.mantiswhiteboard.workers.dev/api/health
 
 ## celld workflow ⬜
 
-This is what's left to set up: celld running on your server through Arcane, reached through your Cloudflare Tunnel.
+This is the one left to do. It follows your normal hosting workflow: **GitHub → Arcane → tunnel route.** Apart from the tunnel you already use, nothing runs on Cloudflare, and there are no secrets to look up.
 
-Results from rehearsing it on a laptop (2 nodes, RustFS as the bucket). Use these as a baseline, not as real numbers:
+### How it works
+
+Everything runs in one Arcane project, defined by [compose.yaml](compose.yaml) at the repo root:
+
+```
+browser / bots ──▶ wb-celld.skelsemporium.com ──▶ your tunnel ──▶ lb (port 8088)
+                                                                    │
+                                          node1 (node2 takes over if node1 dies)
+                                                                    │
+                          s3: the storage bucket both nodes share (app code, board data)
+```
+
+| Service | What it does | Normal state in Arcane |
+|---|---|---|
+| `s3` | The storage celld needs: an S3-compatible bucket ([RustFS](https://rustfs.com)) running in the stack | Running |
+| `bucket` | Creates the bucket the first time, then exits | Exited (0) |
+| `deploy` | Builds the app from this repo and puts it in the bucket, then exits | Exited (0) |
+| `node1`, `node2` | Two celld servers. The bucket decides which one owns each board; if one dies, the other takes its boards over. | Running |
+| `lb` | The one address your tunnel points at. Sends traffic to node1, or node2 when node1 is down. | Running |
+
+"Exited (0)" on `bucket` and `deploy` is correct. They're one-time jobs.
+
+**Secrets:** none to look up. The storage login is made up and only works inside the stack, because nothing but `lb` is reachable from outside. If you want your own values, set `S3_ACCESS_KEY` and `S3_SECRET_KEY` in the Arcane project's `.env`, and set them before the first start: the login is fixed when the storage is first created.
+
+Results from running this exact file on a laptop:
 
 | Test | Result |
 |---|---|
 | Deploy with the unchanged `wrangler.json` | Worked, no edits |
 | `ctx.storage.sql.databaseSize` | Supported |
 | 15 bots on 3 boards for 20s | 580 of 580 strokes saved. Round trip p50 1ms, save p50 5.6ms |
-| `kill -9` of node1 under load (20 bots, 4 boards) | Board back in 10s on node2. 2,755 of 2,755 acknowledged strokes kept. |
+| `kill -9` of node1 under load | Board back in 10s on node2. 1,129 of 1,129 acknowledged strokes kept. |
+| Restart the whole stack | All data still there |
 
 celld saves more slowly than local (5.6ms vs 2.5ms) because each write is copied to the second node before it's acknowledged.
 
-### How the celld setup works
+Two nodes on one server survive a process crash, not a server crash. That's enough to test celld's failover. A real deployment would also keep the bucket on a separate storage service.
 
-```
-your laptop                                  your server (Arcane project)
-───────────                                  ────────────────────────────
-npm run deploy:celld ──writes app──▶ R2 bucket ◀──reads app, stores data── node1, node2
-                                                                              ▲
-browser / bots ──▶ your domain ──▶ lb (Caddy, port WB_PORT) ──────────────────┘
-                                   sends to node1; to node2 when node1 is down
-```
+### Step 1: Try it on your laptop (optional, 5 minutes)
 
-- **The bucket is the source of truth.** It holds the deployed app, every board's data, and the leases that decide which node owns which board. When a node dies, its lease runs out and the other node takes over its boards.
-- **Nothing is built on the server.** The Arcane stack uses only published images (`ghcr.io/denoland/celld` and `caddy`). You deploy the app from your laptop into the bucket, and running nodes pick up the new version within seconds, without restarting.
-- **Two nodes plus a load balancer.** Two nodes is the minimum for failover. The load balancer gives clients one address that keeps working when a node dies.
-- **The nodes talk to each other on a private Docker network** (port 8081). That port isn't published and must never be. celld's peer traffic has no encryption or authentication.
-
-Two nodes on one server survive a process crash, not a server crash. That's enough to test celld's failover. It isn't a production setup.
-
-### What you need
-
-- Docker on your laptop (Node you already have).
-- Your Cloudflare account (for the R2 bucket).
-- Arcane on your server, and your Cloudflare Tunnel.
-- About 1.5 hours.
-
-Track how long setup takes, including debugging. It goes in the "Hours spent operating each" table in [docs/RESULTS.md](docs/RESULTS.md) and is part of the answer.
-
-### celld step 1: Rehearse on your laptop (10 minutes)
-
-This runs the same stack as the server, but with RustFS (a local S3-compatible store) in place of R2. Do it first, so any problems on the server are server problems, not celld problems.
+The same file runs locally. Docker Desktop needs to be running.
 
 ```bash
 npm run rehearse:up
 ```
 
-The first run downloads images and takes a few minutes. Then open http://localhost:8088 in two browser windows and draw.
-
-Try a failover by hand. In one terminal:
-
-```bash
-node scripts/stats.mjs --url http://localhost:8088 --board lobby
-```
-
-In another:
-
-```bash
-docker kill -s KILL wb-rehearsal-node1-1
-```
-
-The stats watcher prints `UNREACHABLE`, then `back after 10.0s` or so, with a new instance id. A browser open on the board shows ink waiting to save during the gap, then saving. Start node1 again with `docker start wb-rehearsal-node1-1`.
-
-When you're done:
+The first run downloads images and takes a few minutes. Open http://localhost:8088 in two windows and draw. Stop and delete it with:
 
 ```bash
 npm run rehearse:down
 ```
 
-### celld step 2: Make the R2 bucket (5 minutes)
+### Step 2: Put the repo on GitHub
 
-```bash
-npx wrangler r2 bucket create whiteboard-lab-celld
-```
-
-Then in the Cloudflare dashboard, go to **R2 → Manage API tokens → Create API token**. Choose **Object Read & Write**, limited to the `whiteboard-lab-celld` bucket only. Copy the Access Key ID, the Secret Access Key, and your Account ID (it's in the S3 endpoint URL the page shows).
-
-Scope it to this one bucket. Whoever has these credentials controls the whole celld fleet.
-
-Create the env file and fill it in:
-
-```bash
-cp deploy/celld/.env.example deploy/celld/.env
-```
-
-Don't put quotes around the values; `docker run --env-file` keeps them literally. The file is gitignored.
-
-Optional check that R2 supports what celld needs (it should):
-
-```bash
-docker run --rm --env-file deploy/celld/.env ghcr.io/denoland/celld:0.6.3 diagnose
-```
-
-Look for `ok bucket conditional write: create, reject-create, update, reject-stale`.
-
-### celld step 3: Deploy the app into the bucket (2 minutes)
-
-From your laptop:
-
-```bash
-npm run deploy:celld
-```
-
-This builds a small image with celld and esbuild, then runs `celld deploy`, which bundles `src/index.js` and `public/` and uploads them to the bucket. It reads the same `wrangler.json` Cloudflare used. Write down any errors or changes you needed; that's the main Experiment 1 result.
-
-Run it again whenever you change the app. Running nodes switch to the new version on their own.
-
-### celld step 4: Start the fleet in Arcane (15 minutes)
-
-1. In Arcane, go to **Projects → Create Project**. Name it `whiteboard-lab`.
-2. Paste the contents of [deploy/celld/compose.yaml](deploy/celld/compose.yaml) into the Compose editor.
-3. Paste the contents of your `deploy/celld/.env` into the **Environment Configuration (.env)** editor.
-4. Click **Create Project**. Arcane pulls the images and starts `node1`, `node2`, and `lb`.
-5. Make it reachable through your Cloudflare Tunnel.
-
-   First, in **Cloudflare DNS for skelsemporium.com**, delete any A records left from the earlier plan (`wb-celld` and `wb-workerd`). The tunnel creates its own record for `wb-celld`, and it can't while an A record with that name exists. `wb-workerd` isn't needed any more.
-
-   Then in **Zero Trust → Networks → Tunnels → your tunnel → Public Hostname → Add a public hostname**:
-
-   - Subdomain `wb-celld`, domain `skelsemporium.com`
-   - Service type `HTTP`, URL: the load balancer as your `cloudflared` sees it.
-     - If `cloudflared` runs directly on the server: `localhost:8088` (the `WB_PORT` value).
-     - If `cloudflared` runs as a Docker container: use the server's LAN IP and port, such as `192.168.1.20:8088`. Inside a container, `localhost` is the container itself.
-
-   WebSockets work through tunnels without extra settings.
-
-   Only the `lb` service should be reachable. Never publish or route to node ports 8080 or 8081.
-
-   Write in RESULTS.md that celld is reached through a Cloudflare Tunnel. Every request then goes laptop → Cloudflare's edge → tunnel → your server, so celld's latency includes Cloudflare's network, and a tunnel hiccup looks the same as a node failure to the bots. That's fine for this experiment, as long as you say so in the results.
-
-6. Check it:
+1. On github.com, click **New repository**. Name it `whiteboard-lab`, make it **Public**, and leave "Add a README" and the other boxes unticked (the repo must start empty).
+2. From this folder, connect it and push (use the URL GitHub shows you):
 
    ```bash
-   curl https://wb-celld.skelsemporium.com/api/health
+   git remote add origin https://github.com/<your-username>/whiteboard-lab.git
    ```
-
-   Then open `https://wb-celld.skelsemporium.com` and draw.
-
-7. Check both nodes see each other. In Arcane, open a terminal on the `node1` container (or on the server, `docker exec -it whiteboard-lab-node1-1 sh`) and run:
 
    ```bash
-   celld diagnose
+   git push -u origin master
    ```
 
-   It should list two node leases. The node logs print a line every second; that's normal for this beta.
+### Step 3: Create the project in Arcane from Git
 
-   Container names come from the Arcane project name. This README assumes `whiteboard-lab`, so `whiteboard-lab-node1-1`. If yours differ, check with `docker ps`.
+1. **Add the repository:** Customization → Git Repositories → Add Repository. Paste the GitHub URL. It's public, so no token should be needed.
+2. **Create the project:** Projects → the dropdown next to **Create Project** → **From Git Repo**. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Direction | Pull |
+   | Sync Name | `whiteboard-lab` |
+   | Target Type | Project, create a new project |
+   | Git Repository / Branch | your repo, `master` |
+   | Compose File Path | `compose.yaml` |
+   | **Sync Files** | **On.** This copies the app code along with the compose file. Without it, the `deploy` service can't build. |
+   | Redeploy After Sync | On, so pushing a change redeploys it |
+
+3. Start the project. The first start builds the app and downloads images, so give it a few minutes. Then check the services match the table above.
+
+If port 8088 is already taken on your server, add `WB_PORT=` with a free port to the project's `.env` and restart the project.
+
+### Step 4: Add the tunnel route
+
+Add a public hostname to your tunnel, the way you do for your other apps:
+
+- Hostname: `wb-celld.skelsemporium.com`
+- Service: `http://localhost:8088`. If `cloudflared` runs in a Docker container, use the server's LAN IP instead of `localhost`, for example `http://192.168.1.20:8088`.
+
+If you still have the `wb-celld` and `wb-workerd` A records from the earlier plan, delete them first. The tunnel can't create its `wb-celld` record while an A record with that name exists.
+
+Check it:
+
+```bash
+curl https://wb-celld.skelsemporium.com/api/health
+```
+
+Then open https://wb-celld.skelsemporium.com and draw. Done.
+
+Note in RESULTS.md that celld traffic comes through your tunnel. Requests go through Cloudflare's network before reaching your server, so that's part of celld's latency numbers.
 
 ---
 
@@ -278,7 +234,7 @@ Take round trip p50/p99 and save p50/p99 from each `summary.json`.
 
 What to look for:
 
-- **Save time.** On celld, the node acknowledges a write once the other node has it on disk, then uploads to R2 in the background. If one node is down, every write waits for R2 instead. Try a run with node2 stopped to see that cost.
+- **Save time.** On celld, the node acknowledges a write once the other node has it on disk, then copies it to the bucket in the background. If one node is down, every write waits for the bucket instead. Try a run with node2 stopped to see that cost.
 - **Distance.** If you can, run it again from a machine in another region. Cloudflare places each board near whoever first used it. Your server is in one place for everyone.
 
 ### Experiment 3: Failover (the main one)
@@ -299,7 +255,7 @@ Terminal 2, the watcher. It prints the instance id every second, and how long th
 node scripts/stats.mjs --url $CELLD --board c-fail-1
 ```
 
-At about 60 seconds, kill node1. The load balancer sends everything to node1 while it's healthy, so node1 owns the board. On the server:
+At about 60 seconds, kill node1. The load balancer sends everything to node1 while it's healthy, so node1 owns the board. On the server (if the name doesn't match, find it with `docker ps`; it comes from the Arcane project name):
 
 ```bash
 docker kill -s KILL whiteboard-lab-node1-1
@@ -347,12 +303,10 @@ This is the concrete answer to "why would you not want this?": one board can't s
    node scripts/bots.mjs --url $CELLD --board c-idle --boards 200 --clients 1 --duration 20 --run c-idle
    ```
 
-2. Note the R2 operation counts: **R2 → whiteboard-lab-celld → Metrics** (Class A and Class B operations).
-3. Leave everything alone for 30 minutes.
-4. Check the operation counts again. celld claims idle boards cost almost nothing in bucket operations.
-5. Open `$CELLD/?b=c-idle-7`. Note whether the instance id is new (it was evicted from memory) and the first round trip.
+2. Leave everything alone for 30 minutes.
+3. Open `$CELLD/?b=c-idle-7`. Note whether the instance id is new (it was evicted from memory) and the first round trip.
 
-Repeat steps 1, 3, and 5 on Workers (`w-idle`), and compare Cloudflare's Workers usage page for the same period. For celld's cost, add your server's monthly cost to R2's storage and operation charges.
+Repeat on Workers (`w-idle`), and look at Cloudflare's Workers usage page for the same period. celld's cost is your server's cost: note its CPU and memory use with 200 idle boards (Arcane's container stats).
 
 ---
 
@@ -360,8 +314,7 @@ Repeat steps 1, 3, and 5 on Workers (`w-idle`), and compare Cloudflare's Workers
 
 There's no auth, so anyone with a URL can draw on or clear a board. Take things down when you're done:
 
-- **Arcane:** stop and delete the `whiteboard-lab` project, including its volumes.
-- **R2:** empty and delete the `whiteboard-lab-celld` bucket, and delete the API token.
+- **Arcane:** stop and delete the `whiteboard-lab` project, including its volumes, and remove the tunnel route.
 - **Cloudflare Worker:** `npx wrangler delete`.
 
 ---
@@ -388,8 +341,7 @@ Fill this in at the end, using what's in RESULTS.md.
 |---|---|
 | `npm run dev` | Run locally on workerd (wrangler) at http://localhost:8787 |
 | `npm run deploy:cf` | Deploy to Cloudflare |
-| `npm run deploy:celld` | Deploy to the celld bucket in `deploy/celld/.env` (uses Docker) |
-| `npm run rehearse:up` / `rehearse:down` | Start or delete the local celld stack at http://localhost:8088 |
+| `npm run rehearse:up` / `rehearse:down` | Start or delete the celld stack locally at http://localhost:8088 |
 
 ### Test scripts
 
@@ -429,11 +381,8 @@ src/index.js                     Worker router + Board Durable Object
 public/                          browser client (no build step)
 scripts/                         bots.mjs, verify.mjs, stats.mjs
 wrangler.json                    config read by wrangler and by celld
-deploy/celld/compose.yaml        the Arcane stack: node1, node2, lb
-deploy/celld/.env.example        settings for the stack and for deploy:celld
-deploy/celld/Dockerfile.deploy   celld + esbuild, used by deploy:celld
-deploy/celld/compose.local.yaml  rehearsal additions: RustFS bucket + auto-deploy
-deploy/celld/local.env           throwaway settings for the rehearsal
+compose.yaml                     the celld stack: storage, deploy job, node1, node2, lb
+deploy/celld/Dockerfile.deploy   builds the app into the bucket (used by compose.yaml)
 docs/                            spec, experiment details, results template
 ```
 
