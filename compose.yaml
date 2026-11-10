@@ -53,10 +53,26 @@ services:
 
   # Runs once per deploy: bundles the app and uploads it to the bucket. The
   # nodes notice the new version and switch to it without restarting.
+  #
+  # The app code comes straight from GitHub (the `context` URL), and the build
+  # recipe is inline, so this works even when Arcane copies only this file.
+  # It always builds what's pushed to master, not uncommitted local changes.
   deploy:
     build:
-      context: .
-      dockerfile: deploy/celld/Dockerfile.deploy
+      context: https://github.com/ValNielson/whiteboard-lab.git#master
+      dockerfile_inline: |
+        FROM node:22-bookworm-slim AS esbuild
+        RUN mkdir /e && cd /e && npm init -y >/dev/null \
+         && npm install --no-audit --no-fund esbuild@0.25.10 >/dev/null \
+         && cp node_modules/@esbuild/linux-*/bin/esbuild /usr/local/bin/esbuild
+
+        FROM ghcr.io/denoland/celld:0.6.3
+        COPY --from=esbuild /usr/local/bin/esbuild /usr/local/bin/esbuild
+        WORKDIR /app
+        COPY wrangler.json ./
+        COPY src ./src
+        COPY public ./public
+        ENTRYPOINT ["/usr/local/bin/celld", "deploy", "/app"]
     depends_on:
       bucket: { condition: service_completed_successfully }
     restart: "no"

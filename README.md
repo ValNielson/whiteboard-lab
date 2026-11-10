@@ -102,11 +102,13 @@ browser / bots ──▶ wb-celld.skelsemporium.com ──▶ your tunnel ──
 |---|---|---|
 | `s3` | The storage celld needs: an S3-compatible bucket ([RustFS](https://rustfs.com)) running in the stack | Running |
 | `bucket` | Creates the bucket the first time, then exits | Exited (0) |
-| `deploy` | Builds the app from this repo and puts it in the bucket, then exits | Exited (0) |
+| `deploy` | Downloads the app code from GitHub (`master`), builds it, and puts it in the bucket, then exits | Exited (0) |
 | `node1`, `node2` | Two celld servers. The bucket decides which one owns each board; if one dies, the other takes its boards over. | Running |
 | `lb` | The one address your tunnel points at. Sends traffic to node1, or node2 when node1 is down. | Running |
 
 "Exited (0)" on `bucket` and `deploy` is correct. They're one-time jobs.
+
+**What gets deployed:** whatever is pushed to `master` on GitHub, not changes sitting on your laptop. To ship a change: commit, push, then redeploy the project in Arcane (or wait for Auto Sync). The local rehearsal (`npm run rehearse:up`) also builds from GitHub.
 
 **Secrets:** none to look up. The storage login is made up and only works inside the stack, because nothing but `lb` is reachable from outside. If you want your own values, set `S3_ACCESS_KEY` and `S3_SECRET_KEY` in the Arcane project's `.env`, and set them before the first start: the login is fixed when the storage is first created.
 
@@ -161,9 +163,9 @@ npm run rehearse:down
    | Direction | Pull |
    | Sync Name | `whiteboard-lab` |
    | Target Type | Project, create a new project |
-   | Git Repository / Branch | your repo, `master` |
+   | Git Repository / Branch | your repo, `master` (not `main`) |
    | Compose File Path | `compose.yaml` |
-   | **Sync Files** | **On.** This copies the app code along with the compose file. Without it, the `deploy` service can't build. |
+   | Sync Files | Doesn't matter. The stack gets the app code from GitHub itself. |
    | Redeploy After Sync | On, so pushing a change redeploys it |
 
 3. Start the project. The first start builds the app and downloads images, so give it a few minutes. Then check the services match the table above.
@@ -382,7 +384,6 @@ public/                          browser client (no build step)
 scripts/                         bots.mjs, verify.mjs, stats.mjs
 wrangler.json                    config read by wrangler and by celld
 compose.yaml                     the celld stack: storage, deploy job, node1, node2, lb
-deploy/celld/Dockerfile.deploy   builds the app into the bucket (used by compose.yaml)
 docs/                            spec, experiment details, results template
 ```
 
