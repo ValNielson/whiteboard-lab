@@ -156,8 +156,8 @@ function finish() {
     durationS: Math.round((Date.now() - started) / 1000),
     strokesSent: m.sent, strokesAcked: m.acked, stillUnacked: unacked, duplicateAcks: m.dupAcks,
     reconnects: m.reconnects, connectTimeouts: m.connectTimeouts, errors: m.errors,
-    rttMs: { p50: p(m.rttAll, .5), p95: p(m.rttAll, .95), p99: p(m.rttAll, .99), max: p(m.rttAll, 1) },
-    saveMs: { p50: p(m.ackAll, .5), p95: p(m.ackAll, .95), p99: p(m.ackAll, .99), max: p(m.ackAll, 1) },
+    rttMs: { min: p(m.rttAll, 0), p5: p(m.rttAll, .05), p50: p(m.rttAll, .5), p95: p(m.rttAll, .95), p99: p(m.rttAll, .99), max: p(m.rttAll, 1) },
+    saveMs: { min: p(m.ackAll, 0), p5: p(m.ackAll, .05), p50: p(m.ackAll, .5), p95: p(m.ackAll, .95), p99: p(m.ackAll, .99), max: p(m.ackAll, 1) },
   };
   for (const [b, ids] of ackedIds) writeFileSync(join(OUT, `acked-${b}.json`), JSON.stringify({ board: b, ids }));
   writeFileSync(join(OUT, "summary.json"), JSON.stringify(summary, null, 2));
